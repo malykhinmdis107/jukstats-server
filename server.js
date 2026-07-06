@@ -111,7 +111,6 @@ app.post('/api/avatar/:accountId', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// WebSocket
 const wss = new WebSocket.Server({ server });
 const rooms = new Map();
 
