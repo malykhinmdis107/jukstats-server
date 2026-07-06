@@ -5,12 +5,13 @@ const http = require('http');
 const admin = require('firebase-admin');
 const fs = require('fs');
 const multer = require('multer');
+const sharp = require('sharp');
 
 const app = express();
 const server = http.createServer(app);
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // ==================== FIREBASE ====================
 let db = null;
@@ -29,7 +30,7 @@ try {
   if (serviceAccount) {
     admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     db = admin.firestore();
-    console.log('🔥 FIREBASE OK');
+    console.log('🔥 FIREBASE OK - Project:', serviceAccount.project_id);
   }
 } catch(e) {
   console.error('❌ Ошибка Firebase:', e.message);
@@ -40,14 +41,13 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', firebase: !!db });
 });
 
-// История чата - ИСПРАВЛЕННЫЙ ЗАПРОС
+// ==================== ИСТОРИЯ ЧАТА ====================
 app.get('/api/chat/:clanId/history', async (req, res) => {
   if (!db) return res.json({ general: [], officer: [] });
   
   try {
     const { clanId } = req.params;
     
-    // Получаем ВСЕ сообщения и фильтруем на клиенте
     const snapshot = await db
       .collection('clans').doc(clanId)
       .collection('messages')
@@ -61,7 +61,6 @@ app.get('/api/chat/:clanId/history', async (req, res) => {
     const general = allMessages.filter(m => !m.isOfficer).slice(0, 100);
     const officer = allMessages.filter(m => m.isOfficer).slice(0, 100);
     
-    console.log(`📖 История: общий=${general.length}, офицер=${officer.length}`);
     res.json({ general: general.reverse(), officer: officer.reverse() });
   } catch(e) {
     console.error('❌ Ошибка истории:', e.message);
@@ -69,7 +68,7 @@ app.get('/api/chat/:clanId/history', async (req, res) => {
   }
 });
 
-// Сохранение сообщения
+// ==================== СОХРАНЕНИЕ СООБЩЕНИЯ ====================
 app.post('/api/chat/:clanId/message', async (req, res) => {
   if (!db) return res.json({ success: false });
   
@@ -86,7 +85,6 @@ app.post('/api/chat/:clanId/message', async (req, res) => {
       .collection('messages').doc(String(message.id))
       .set(message);
     
-    console.log(`✅ Сообщение ${message.id} сохранено`);
     res.json({ success: true });
   } catch(e) {
     console.error('❌ Ошибка сохранения:', e.message);
@@ -94,7 +92,27 @@ app.post('/api/chat/:clanId/message', async (req, res) => {
   }
 });
 
-// Лог
+// ==================== УДАЛЕНИЕ СООБЩЕНИЯ ====================
+app.delete('/api/chat/:clanId/message/:messageId', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  
+  try {
+    const { clanId, messageId } = req.params;
+    
+    await db
+      .collection('clans').doc(clanId)
+      .collection('messages').doc(messageId)
+      .delete();
+    
+    console.log(`🗑️ Сообщение ${messageId} удалено`);
+    res.json({ success: true });
+  } catch(e) {
+    console.error('❌ Ошибка удаления:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ==================== ЧАТ-ЛОГ ====================
 app.get('/api/chat/:clanId/log', async (req, res) => {
   if (!db) return res.json([]);
   try {
@@ -116,7 +134,7 @@ app.post('/api/chat/:clanId/log', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// Доска
+// ==================== ДОСКА ОБЪЯВЛЕНИЙ ====================
 app.get('/api/chat/:clanId/board', async (req, res) => {
   if (!db) return res.json([]);
   try {
@@ -142,7 +160,7 @@ app.delete('/api/chat/:clanId/board/:itemId', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// Аватары
+// ==================== АВАТАРЫ ====================
 app.get('/api/avatars/list', async (req, res) => {
   if (!db) return res.json({});
   try {
@@ -163,39 +181,67 @@ app.post('/api/avatar/:accountId', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// Загрузка фото
-const upload = multer({ 
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 1 * 1024 * 1024 } // 1 МБ максимум
+// ==================== ПРОФИЛИ (ОБВОДКИ И ЦВЕТА НИКОВ) ====================
+app.get('/api/profiles/list', async (req, res) => {
+  if (!db) return res.json({});
+  try {
+    const snap = await db.collection('profiles').get();
+    const profiles = {};
+    snap.forEach(d => profiles[d.id] = d.data());
+    res.json(profiles);
+  } catch(e) { res.json({}); }
 });
+
+app.post('/api/profile/:accountId', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  try {
+    await db.collection('profiles').doc(req.params.accountId).set({
+      border: req.body.border || '',
+      nickname: req.body.nickname || '',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ==================== МОДЕРАЦИЯ (МУТЫ/БАНЫ) ====================
+app.get('/api/chat/:clanId/moderation', async (req, res) => {
+  if (!db) return res.json({ muted: {}, banned: {} });
+  try {
+    const doc = await db.collection('clans').doc(req.params.clanId).collection('moderation').doc('state').get();
+    if (doc.exists) {
+      const data = doc.data();
+      res.json({ muted: data.muted || {}, banned: data.banned || {} });
+    } else {
+      res.json({ muted: {}, banned: {} });
+    }
+  } catch(e) { res.json({ muted: {}, banned: {} }); }
+});
+
+app.post('/api/chat/:clanId/moderation', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  try {
+    await db.collection('clans').doc(req.params.clanId).collection('moderation').doc('state').set(req.body);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ==================== ЗАГРУЗКА ФОТО ====================
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 app.post('/api/chat/photo', upload.single('photo'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Нет файла' });
   try {
+    const resized = await sharp(req.file.buffer)
+      .resize(800, 800, { fit: 'inside' })
+      .jpeg({ quality: 70 })
+      .toBuffer();
+    
+    const base64 = resized.toString('base64');
+    res.json({ success: true, url: `data:image/jpeg;base64,${base64}` });
+  } catch(e) {
     const base64 = req.file.buffer.toString('base64');
     res.json({ success: true, url: `data:${req.file.mimetype};base64,${base64}` });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Удаление сообщения
-app.delete('/api/chat/:clanId/message/:messageId', async (req, res) => {
-  if (!db) return res.json({ success: false });
-  
-  try {
-    const { clanId, messageId } = req.params;
-    
-    await db
-      .collection('clans').doc(clanId)
-      .collection('messages').doc(messageId)
-      .delete();
-    
-    console.log(`🗑️ Сообщение ${messageId} удалено`);
-    res.json({ success: true });
-  } catch(e) {
-    console.error('❌ Ошибка удаления:', e.message);
-    res.status(500).json({ error: e.message });
   }
 });
 
