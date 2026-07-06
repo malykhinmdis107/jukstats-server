@@ -1,208 +1,134 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
 const http = require('http');
-const multer = require('multer');
-const path = require('path');
+const admin = require('firebase-admin');
 const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-// ==================== НАСТРОЙКА ХРАНИЛИЩА АВАТАРОВ ====================
-const avatarsDir = path.join(__dirname, 'storage', 'avatars');
-if (!fs.existsSync(avatarsDir)) {
-    fs.mkdirSync(avatarsDir, { recursive: true });
+// ==================== FIREBASE ====================
+let db = null;
+
+try {
+  let serviceAccount = null;
+
+  if (fs.existsSync('/etc/secrets/serviceAccountKey.json')) {
+    serviceAccount = JSON.parse(fs.readFileSync('/etc/secrets/serviceAccountKey.json', 'utf8'));
+    console.log('✅ Ключ из Secret File');
+  } else if (process.env.FIREBASE_KEY) {
+    serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+    console.log('✅ Ключ из FIREBASE_KEY');
+  } else if (fs.existsSync('./serviceAccountKey.json')) {
+    serviceAccount = JSON.parse(fs.readFileSync('./serviceAccountKey.json', 'utf8'));
+    console.log('✅ Ключ из корня');
+  }
+
+  if (serviceAccount) {
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    db = admin.firestore();
+    console.log('🔥 FIREBASE OK');
+  } else {
+    console.log('❌ Ключ не найден');
+  }
+} catch(e) {
+  console.error('❌ ОШИБКА:', e.message);
 }
 
-// Настройка multer для загрузки файлов
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, avatarsDir),
-    filename: (req, file, cb) => {
-        const accountId = req.params.accountId;
-        cb(null, `${accountId}.webp`);
-    }
-});
-const upload = multer({ 
-    storage, 
-    limits: { fileSize: 2 * 1024 * 1024 }  // 2 MB
-});
-
-// Раздача статики (аватары)
-app.use('/avatars', express.static(avatarsDir));
-
-// Загрузка аватара
-app.post('/api/avatar/:accountId', upload.single('avatar'), (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: 'Файл не загружен' });
-    }
-    res.json({ 
-        success: true, 
-        url: `/avatars/${req.params.accountId}.webp` 
-    });
-});
-
-// Удаление аватара
-app.delete('/api/avatar/:accountId', (req, res) => {
-    const filePath = path.join(avatarsDir, `${req.params.accountId}.webp`);
-    if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-    }
-    res.json({ success: true });
-});
-
-// Health check
 app.get('/', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        timestamp: Date.now(),
-        uptime: process.uptime()
-    });
+  res.json({ status: 'ok', firebase: !!db });
 });
 
-// Статистика сервера
-app.get('/api/stats', (req, res) => {
-    res.json({
-        status: 'ok',
-        avatarsCount: fs.readdirSync(avatarsDir).length
-    });
+app.get('/api/chat/:clanId/history', async (req, res) => {
+  if (!db) return res.json({ general: [], officer: [] });
+  try {
+    const { clanId } = req.params;
+    const g = []; (await db.collection('clans').doc(clanId).collection('messages').where('isOfficer', '==', false).orderBy('id', 'desc').limit(100).get()).forEach(d => g.push(d.data()));
+    const o = []; (await db.collection('clans').doc(clanId).collection('messages').where('isOfficer', '==', true).orderBy('id', 'desc').limit(100).get()).forEach(d => o.push(d.data()));
+    res.json({ general: g.reverse(), officer: o.reverse() });
+  } catch(e) { res.json({ general: [], officer: [] }); }
 });
 
-// ==================== WEBSOCKET ====================
-const chatRooms = new Map();
-const voiceRooms = new Map();
+app.post('/api/chat/:clanId/message', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  try {
+    req.body.message.isOfficer = !!req.body.isOfficer;
+    await db.collection('clans').doc(req.params.clanId).collection('messages').doc(String(req.body.message.id)).set(req.body.message);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/chat/:clanId/log', async (req, res) => {
+  if (!db) return res.json([]);
+  try {
+    const l = []; (await db.collection('clans').doc(req.params.clanId).collection('logs').orderBy('timestamp', 'desc').limit(100).get()).forEach(d => l.push(d.data()));
+    res.json(l);
+  } catch(e) { res.json([]); }
+});
+
+app.post('/api/chat/:clanId/log', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  try {
+    await db.collection('clans').doc(req.params.clanId).collection('logs').add({ ...req.body.entry, timestamp: admin.firestore.FieldValue.serverTimestamp() });
+    broadcast(req.params.clanId, { type: 'log_update', entry: req.body.entry });
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/chat/:clanId/board', async (req, res) => {
+  if (!db) return res.json([]);
+  try {
+    const b = []; (await db.collection('clans').doc(req.params.clanId).collection('board').orderBy('id', 'desc').limit(50).get()).forEach(d => b.push(d.data()));
+    res.json(b);
+  } catch(e) { res.json([]); }
+});
+
+app.post('/api/chat/:clanId/board', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  try {
+    await db.collection('clans').doc(req.params.clanId).collection('board').doc(String(req.body.item.id)).set(req.body.item);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/avatars/list', async (req, res) => {
+  if (!db) return res.json({});
+  try {
+    const a = {}; (await db.collection('avatars').get()).forEach(d => a[d.id] = d.data().url);
+    res.json(a);
+  } catch(e) { res.json({}); }
+});
+
+app.post('/api/avatar/:accountId', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  try {
+    await db.collection('avatars').doc(req.params.accountId).set({ url: req.body.avatarUrl, ts: admin.firestore.FieldValue.serverTimestamp() });
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// WebSocket
+const wss = new WebSocket.Server({ server });
+const rooms = new Map();
+
+function broadcast(clanId, data) {
+  const room = rooms.get(String(clanId));
+  if (room) { const m = JSON.stringify(data); room.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(m); }); }
+}
 
 wss.on('connection', (ws, req) => {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const pathname = url.pathname;
-    
-    // ========== Чат ==========
-    if (pathname.startsWith('/ws/chat/')) {
-        const clanId = pathname.split('/').pop();
-        
-        if (!chatRooms.has(clanId)) {
-            chatRooms.set(clanId, new Set());
-        }
-        const room = chatRooms.get(clanId);
-        room.add(ws);
-        
-        console.log(`[Chat] +1 в ${clanId}, всего: ${room.size}`);
-        
-        ws.on('message', (message) => {
-            try {
-                const data = JSON.parse(message);
-                for (const client of room) {
-                    if (client !== ws && client.readyState === WebSocket.OPEN) {
-                        client.send(JSON.stringify(data));
-                    }
-                }
-            } catch(e) {
-                console.error('[Chat] Ошибка:', e);
-            }
-        });
-        
-        ws.on('close', () => {
-            room.delete(ws);
-            if (room.size === 0) {
-                chatRooms.delete(clanId);
-            }
-            console.log(`[Chat] -1 из ${clanId}, осталось: ${room.size}`);
-        });
-    }
-    
-    // ========== Голосовой чат ==========
-    else if (pathname.startsWith('/ws/voice/')) {
-        const channelId = pathname.split('/').pop();
-        const accountId = url.searchParams.get('account_id');
-        
-        if (!voiceRooms.has(channelId)) {
-            voiceRooms.set(channelId, new Map());
-        }
-        const room = voiceRooms.get(channelId);
-        
-        const clientId = accountId || `client_${Date.now()}`;
-        room.set(clientId, ws);
-        
-        console.log(`[Voice] +1 в ${channelId}, всего: ${room.size}`);
-        
-        // Отправляем новому участнику список всех в комнате
-        ws.send(JSON.stringify({
-            type: 'participants',
-            participants: Array.from(room.keys())
-        }));
-        
-        ws.on('message', (message) => {
-            try {
-                const data = JSON.parse(message);
-                
-                // Пересылка сигнала конкретному участнику
-                if (data.to && room.has(data.to)) {
-                    const target = room.get(data.to);
-                    if (target && target.readyState === WebSocket.OPEN) {
-                        target.send(JSON.stringify({
-                            type: data.type,
-                            from: data.from || clientId,
-                            data: data.data
-                        }));
-                    }
-                }
-                // Рассылка всем
-                else if (data.broadcast) {
-                    for (const [id, client] of room) {
-                        if (client !== ws && client.readyState === WebSocket.OPEN) {
-                            client.send(JSON.stringify({
-                                type: data.type,
-                                from: data.from || clientId,
-                                data: data.data
-                            }));
-                        }
-                    }
-                }
-            } catch(e) {
-                console.error('[Voice] Ошибка:', e);
-            }
-        });
-        
-        ws.on('close', () => {
-            room.delete(clientId);
-            
-            // Оповещаем остальных
-            for (const client of room.values()) {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify({
-                        type: 'user_left',
-                        userId: clientId
-                    }));
-                }
-            }
-            
-            if (room.size === 0) {
-                voiceRooms.delete(channelId);
-            }
-            console.log(`[Voice] -1 из ${channelId}, осталось: ${room.size}`);
-        });
-    }
+  const clanId = new URL(req.url, `http://${req.headers.host}`).pathname.split('/').pop();
+  if (!rooms.has(clanId)) rooms.set(clanId, new Set());
+  rooms.get(clanId).add(ws);
+  ws.on('message', data => {
+    try { const msg = JSON.parse(data); rooms.get(clanId)?.forEach(c => { if (c !== ws && c.readyState === WebSocket.OPEN) c.send(JSON.stringify(msg)); }); } catch(e) {}
+  });
+  ws.on('close', () => { rooms.get(clanId)?.delete(ws); if (rooms.get(clanId)?.size === 0) rooms.delete(clanId); });
 });
 
-// Запуск сервера
 const PORT = process.env.PORT || 3000;
-
-// Обработка необработанных ошибок
-process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (err) => {
-    console.error('❌ Unhandled Rejection:', err);
-});
-
-server.listen(PORT, () => {
-    console.log(`✅ Сервер запущен на порту ${PORT}`);
-    console.log(`📁 Аватары хранятся в: ${avatarsDir}`);
-    console.log(`📡 WebSocket готов`);
-});
+server.listen(PORT, '0.0.0.0', () => console.log(`✅ PORT:${PORT} FIREBASE:${!!db}`));
