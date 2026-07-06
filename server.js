@@ -4,6 +4,7 @@ const WebSocket = require('ws');
 const http = require('http');
 const admin = require('firebase-admin');
 const fs = require('fs');
+const multer = require('multer');
 
 const app = express();
 const server = http.createServer(app);
@@ -28,17 +29,10 @@ try {
   if (serviceAccount) {
     admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     db = admin.firestore();
-    console.log('🔥 FIREBASE OK - Project:', serviceAccount.project_id);
-    
-    // Тестовая запись
-    db.collection('test').doc('connection').set({ time: Date.now() })
-      .then(() => console.log('✅ Тестовая запись в Firebase успешна'))
-      .catch(e => console.error('❌ Ошибка тестовой записи:', e.message));
-  } else {
-    console.log('❌ Ключ не найден');
+    console.log('🔥 FIREBASE OK');
   }
 } catch(e) {
-  console.error('❌ ОШИБКА Firebase:', e.message);
+  console.error('❌ Ошибка Firebase:', e.message);
 }
 
 // ==================== API ====================
@@ -46,41 +40,28 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', firebase: !!db });
 });
 
-// История чата
+// История чата - ИСПРАВЛЕННЫЙ ЗАПРОС
 app.get('/api/chat/:clanId/history', async (req, res) => {
-  if (!db) {
-    console.log('❌ history: нет БД');
-    return res.json({ general: [], officer: [] });
-  }
+  if (!db) return res.json({ general: [], officer: [] });
   
   try {
     const { clanId } = req.params;
-    console.log(`📖 Загрузка истории для клана ${clanId}`);
     
-    const generalSnap = await db
+    // Получаем ВСЕ сообщения и фильтруем на клиенте
+    const snapshot = await db
       .collection('clans').doc(clanId)
       .collection('messages')
-      .where('isOfficer', '==', false)
       .orderBy('id', 'desc')
-      .limit(100)
+      .limit(200)
       .get();
     
-    const general = [];
-    generalSnap.forEach(d => general.push(d.data()));
-    console.log(`📖 Общий чат: ${general.length} сообщений`);
+    const allMessages = [];
+    snapshot.forEach(d => allMessages.push(d.data()));
     
-    const officerSnap = await db
-      .collection('clans').doc(clanId)
-      .collection('messages')
-      .where('isOfficer', '==', true)
-      .orderBy('id', 'desc')
-      .limit(100)
-      .get();
+    const general = allMessages.filter(m => !m.isOfficer).slice(0, 100);
+    const officer = allMessages.filter(m => m.isOfficer).slice(0, 100);
     
-    const officer = [];
-    officerSnap.forEach(d => officer.push(d.data()));
-    console.log(`📖 Офицерский чат: ${officer.length} сообщений`);
-    
+    console.log(`📖 История: общий=${general.length}, офицер=${officer.length}`);
     res.json({ general: general.reverse(), officer: officer.reverse() });
   } catch(e) {
     console.error('❌ Ошибка истории:', e.message);
@@ -90,23 +71,15 @@ app.get('/api/chat/:clanId/history', async (req, res) => {
 
 // Сохранение сообщения
 app.post('/api/chat/:clanId/message', async (req, res) => {
-  if (!db) {
-    console.log('❌ message: нет БД');
-    return res.json({ success: false, error: 'no database' });
-  }
+  if (!db) return res.json({ success: false });
   
   try {
     const { clanId } = req.params;
     const { message, isOfficer } = req.body;
     
-    if (!message || !message.id) {
-      console.log('❌ Нет сообщения или id');
-      return res.status(400).json({ error: 'Нет сообщения' });
-    }
+    if (!message || !message.id) return res.status(400).json({ error: 'Нет сообщения' });
     
     message.isOfficer = !!isOfficer;
-    
-    console.log(`💾 Сохранение: clan=${clanId} id=${message.id} officer=${!!isOfficer}`);
     
     await db
       .collection('clans').doc(clanId)
@@ -191,10 +164,9 @@ app.post('/api/avatar/:accountId', async (req, res) => {
 });
 
 // Загрузка фото
-const multer = require('multer');
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }
+  limits: { fileSize: 1 * 1024 * 1024 } // 1 МБ максимум
 });
 
 app.post('/api/chat/photo', upload.single('photo'), async (req, res) => {
@@ -223,7 +195,6 @@ wss.on('connection', (ws, req) => {
   const clanId = new URL(req.url, `http://${req.headers.host}`).pathname.split('/').pop();
   if (!rooms.has(clanId)) rooms.set(clanId, new Set());
   rooms.get(clanId).add(ws);
-  console.log(`🔌 WS +${clanId}: ${rooms.get(clanId).size}`);
   
   ws.on('message', data => {
     try {
