@@ -179,6 +179,26 @@ app.post('/api/chat/photo', upload.single('photo'), async (req, res) => {
   }
 });
 
+// Удаление сообщения
+app.delete('/api/chat/:clanId/message/:messageId', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  
+  try {
+    const { clanId, messageId } = req.params;
+    
+    await db
+      .collection('clans').doc(clanId)
+      .collection('messages').doc(messageId)
+      .delete();
+    
+    console.log(`🗑️ Сообщение ${messageId} удалено`);
+    res.json({ success: true });
+  } catch(e) {
+    console.error('❌ Ошибка удаления:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ==================== WEBSOCKET ====================
 const wss = new WebSocket.Server({ server });
 const rooms = new Map();
