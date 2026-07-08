@@ -282,6 +282,93 @@ app.post('/api/chat/:clanId/moderation', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== СТАТИСТИКА ПО ТАНКАМ (ОТМЕТКИ) ====================
+
+// Получение статистики по конкретному танку игрока
+app.get('/api/player/:accountId/tank-stats/:tankId', async (req, res) => {
+  if (!db) return res.json({ error: 'no database' });
+  
+  try {
+    const { accountId, tankId } = req.params;
+    
+    // Ищем документ в коллекции tankStats/{accountId}/tanks/{tankId}
+    const doc = await db
+      .collection('tankStats')
+      .doc(accountId)
+      .collection('tanks')
+      .doc(tankId)
+      .get();
+    
+    if (doc.exists) {
+      res.json(doc.data());
+    } else {
+      // Если данных нет, возвращаем пустую структуру
+      res.json({ 
+        last_total_damage: 0, 
+        battles_count: 0, 
+        battles: [] 
+      });
+    }
+  } catch(e) {
+    console.error('❌ Ошибка загрузки статистики танка:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Обновление/Сохранение статистики по танку
+app.post('/api/player/:accountId/tank-stats/:tankId', async (req, res) => {
+  if (!db) return res.json({ success: false, error: 'no database' });
+  
+  try {
+    const { accountId, tankId } = req.params;
+    const { last_total_damage, battles_count, new_battles } = req.body;
+    
+    if (last_total_damage === undefined || !new_battles) {
+      return res.status(400).json({ error: 'Недостаточно данных' });
+    }
+
+    const tankRef = db.collection('tankStats').doc(accountId).collection('tanks').doc(tankId);
+    
+    // Используем транзакцию или просто set с merge, чтобы не потерять старые бои, если они есть
+    // Но лучше делать update, добавляя новые бои в массив
+    
+    await tankRef.set({
+      last_total_damage: last_total_damage,
+      battles_count: battles_count,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    // Если есть новые бои, добавляем их в подколлекцию или в массив внутри документа
+    // Для простоты и скорости чтения будем хранить последние 100 боёв прямо в документе в поле 'battles'
+    if (new_battles && new_battles.length > 0) {
+      // Сначала получаем текущие бои, чтобы добавить к ним новые
+      const currentDoc = await tankRef.get();
+      let currentBattles = [];
+      
+      if (currentDoc.exists && currentDoc.data().battles) {
+        currentBattles = currentDoc.data().battles;
+      }
+      
+      // Добавляем новые бои в конец
+      const updatedBattles = [...currentBattles, ...new_battles];
+      
+      // Оставляем только последние 100
+      const finalBattles = updatedBattles.slice(-100);
+      
+      await tankRef.update({
+        battles: finalBattles
+      });
+    }
+    
+    console.log(`💾 Статистика танка ${tankId} для ${accountId} обновлена`);
+    res.json({ success: true });
+    
+  } catch(e) {
+    console.error('❌ Ошибка сохранения статистики танка:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ==================== ЕЖЕДНЕВНАЯ СТАТИСТИКА ИГРОКА ====================
 
 // Сохранение ежедневного снимка статистики
