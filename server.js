@@ -77,43 +77,48 @@ app.get('/api/admin/thresholds-list', async (req, res) => {
   } catch(e) { res.json({}); }
 });
 
+// server.js - Полная замена секции тикетов поддержки
+
 // ==================== ТИКЕТЫ ПОДДЕРЖКИ ====================
+// Получение тикетов
 app.get('/api/support/tickets', async (req, res) => {
-  if (!db) return res.json([]);
+  if (!db) {
+    console.log('❌ Нет БД');
+    return res.json([]);
+  }
+  
   try {
     let tickets = [];
     
     if (req.query.accountId) {
-      const searchId = req.query.accountId;
-      console.log('🔍 Поиск тикетов для accountId:', searchId);
+      // Ищем ВООБЩЕ ВСЕ тикеты и фильтруем вручную
+      console.log('🔍 Ищем тикеты для accountId:', req.query.accountId);
       
-      // Пробуем найти где accountId равен строке ИЛИ числу
-      // Для этого делаем два запроса и объединяем результаты
-      const results = new Map();
-      
-      // Запрос 1: accountId как число
-      const snap1 = await db.collection('support')
-        .where('accountId', '==', Number(searchId))
+      const snap = await db.collection('support')
         .orderBy('time', 'desc')
-        .limit(50)
         .get();
-      snap1.forEach(doc => results.set(doc.id, { id: doc.id, ...doc.data() }));
       
-      // Запрос 2: accountId как строка
-      const snap2 = await db.collection('support')
-        .where('accountId', '==', String(searchId))
-        .orderBy('time', 'desc')
-        .limit(50)
-        .get();
-      snap2.forEach(doc => results.set(doc.id, { id: doc.id, ...doc.data() }));
+      snap.forEach(doc => {
+        const data = doc.data();
+        // Сравниваем как строку и как число
+        if (String(data.accountId) === String(req.query.accountId) ||
+            Number(data.accountId) === Number(req.query.accountId)) {
+          tickets.push({ id: doc.id, ...data });
+        }
+      });
       
-      tickets = Array.from(results.values());
-      tickets.sort((a, b) => (b.time || 0) - (a.time || 0));
-      
-      console.log(`📋 Найдено ${tickets.length} тикетов для ${searchId}`);
+      console.log(`📋 Найдено ${tickets.length} тикетов для ${req.query.accountId}`);
     } else {
-      const snap = await db.collection('support').orderBy('time', 'desc').limit(100).get();
-      snap.forEach(doc => tickets.push({ id: doc.id, ...doc.data() }));
+      // Все тикеты для админа
+      const snap = await db.collection('support')
+        .orderBy('time', 'desc')
+        .limit(100)
+        .get();
+      
+      snap.forEach(doc => {
+        tickets.push({ id: doc.id, ...doc.data() });
+      });
+      
       console.log(`📋 Всего тикетов: ${tickets.length}`);
     }
     
@@ -124,22 +129,30 @@ app.get('/api/support/tickets', async (req, res) => {
   }
 });
 
+// Создание тикета
 app.post('/api/support/ticket', async (req, res) => {
-  if (!db) return res.json({ success: false, error: 'no database' });
+  if (!db) {
+    console.log('❌ Нет БД');
+    return res.json({ success: false, error: 'no database' });
+  }
+  
   try {
+    // Сохраняем accountId как число
+    const accountId = parseInt(req.body.accountId) || req.body.accountId;
+    
     const ticket = {
-      user: req.body.user || 'Аноним',
-      accountId: Number(req.body.accountId) || String(req.body.accountId || ''),
-      category: req.body.category || 'Обращение',
-      message: req.body.message || '',
+      user: String(req.body.user || 'Аноним'),
+      accountId: accountId,
+      category: String(req.body.category || 'Обращение'),
+      message: String(req.body.message || ''),
       status: 'pending',
-      time: req.body.time || Date.now()
+      time: Number(req.body.time) || Date.now()
     };
     
-    console.log('📝 Новый тикет:', JSON.stringify(ticket));
+    console.log('📝 Сохраняем тикет:', JSON.stringify(ticket));
     
     const docRef = await db.collection('support').add(ticket);
-    console.log('✅ Тикет сохранён:', docRef.id);
+    console.log('✅ Тикет сохранён с ID:', docRef.id);
     
     res.json({ success: true, id: docRef.id });
   } catch(e) {
@@ -148,27 +161,34 @@ app.post('/api/support/ticket', async (req, res) => {
   }
 });
 
+// Обновление тикета
 app.put('/api/support/ticket/:ticketId', async (req, res) => {
-  if (!db) return res.json({ success: false, error: 'no database' });
+  if (!db) {
+    console.log('❌ Нет БД');
+    return res.json({ success: false, error: 'no database' });
+  }
+  
   try {
     const { ticketId } = req.params;
     const updateData = {};
     
-    if (req.body.status) updateData.status = req.body.status;
-    if (req.body.adminReply) updateData.adminReply = req.body.adminReply;
-    if (req.body.adminName) updateData.adminName = req.body.adminName;
-    if (req.body.adminId) updateData.adminId = Number(req.body.adminId) || String(req.body.adminId || '');
-    if (req.body.updatedAt) updateData.updatedAt = req.body.updatedAt;
+    if (req.body.status) updateData.status = String(req.body.status);
+    if (req.body.adminReply) updateData.adminReply = String(req.body.adminReply);
+    if (req.body.adminName) updateData.adminName = String(req.body.adminName);
+    if (req.body.adminId) updateData.adminId = parseInt(req.body.adminId) || req.body.adminId;
+    if (req.body.updatedAt) updateData.updatedAt = Number(req.body.updatedAt);
+    
+    console.log('🔄 Обновление тикета:', ticketId, updateData);
     
     await db.collection('support').doc(ticketId).update(updateData);
-    console.log(`✅ Тикет ${ticketId} обновлён`);
+    console.log('✅ Тикет обновлён');
+    
     res.json({ success: true });
   } catch(e) {
-    console.error('❌ Ошибка обновления тикета:', e.message);
+    console.error('❌ Ошибка обновления:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
-
 // ==================== ИСТОРИЯ ЧАТА ====================
 app.get('/api/chat/:clanId/history', async (req, res) => {
   if (!db) return res.json({ general: [], officer: [] });
