@@ -204,6 +204,62 @@ app.post('/api/profile/:accountId', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== АВАТАРЫ И БАННЕРЫ КЛАНОВ ====================
+
+// Получить аватар клана
+app.get('/api/clan/:clanId/avatar', async (req, res) => {
+  if (!db) return res.json({ url: null });
+  try {
+    const doc = await db.collection('clans').doc(req.params.clanId).collection('settings').doc('avatar').get();
+    res.json(doc.exists ? doc.data() : { url: null });
+  } catch(e) { res.json({ url: null }); }
+});
+
+// Сохранить аватар клана
+app.post('/api/clan/:clanId/avatar', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  try {
+    await db.collection('clans').doc(req.params.clanId).collection('settings').doc('avatar').set({ url: req.body.url });
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Получить баннер клана
+app.get('/api/clan/:clanId/banner', async (req, res) => {
+  if (!db) return res.json({ url: null });
+  try {
+    const doc = await db.collection('clans').doc(req.params.clanId).collection('settings').doc('banner').get();
+    res.json(doc.exists ? doc.data() : { url: null });
+  } catch(e) { res.json({ url: null }); }
+});
+
+// Сохранить баннер клана
+app.post('/api/clan/:clanId/banner', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  try {
+    await db.collection('clans').doc(req.params.clanId).collection('settings').doc('banner').set({ url: req.body.url });
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Получить соцсети клана
+app.get('/api/clan/:clanId/socials', async (req, res) => {
+  if (!db) return res.json({});
+  try {
+    const doc = await db.collection('clans').doc(req.params.clanId).collection('settings').doc('socials').get();
+    res.json(doc.exists ? doc.data() : {});
+  } catch(e) { res.json({}); }
+});
+
+// Сохранить соцсети клана
+app.post('/api/clan/:clanId/socials', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  try {
+    await db.collection('clans').doc(req.params.clanId).collection('settings').doc('socials').set(req.body);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ==================== МОДЕРАЦИЯ (МУТЫ/БАНЫ) ====================
 app.get('/api/chat/:clanId/moderation', async (req, res) => {
   if (!db) return res.json({ muted: {}, banned: {} });
