@@ -81,34 +81,55 @@ app.get('/api/admin/thresholds-list', async (req, res) => {
 app.get('/api/support/tickets', async (req, res) => {
   if (!db) return res.json([]);
   try {
-    let query = db.collection('support').orderBy('time', 'desc').limit(100);
+    let tickets = [];
     
-    // Если указан accountId — фильтруем по пользователю
     if (req.query.accountId) {
-      query = db.collection('support')
-        .where('accountId', '==', parseInt(req.query.accountId))
+      // Ищем тикеты пользователя — пробуем и строку, и число
+      const accountId = req.query.accountId;
+      console.log('🔍 Поиск тикетов для accountId:', accountId, 'тип:', typeof accountId);
+      
+      // Пробуем как строку
+      let snap = await db.collection('support')
+        .where('accountId', '==', accountId)
         .orderBy('time', 'desc')
-        .limit(50);
+        .limit(50)
+        .get();
+      
+      // Если пусто — пробуем как число
+      if (snap.empty) {
+        snap = await db.collection('support')
+          .where('accountId', '==', parseInt(accountId))
+          .orderBy('time', 'desc')
+          .limit(50)
+          .get();
+      }
+      
+      // Если и так пусто — пробуем как строку ещё раз (на всякий случай)
+      if (snap.empty) {
+        snap = await db.collection('support')
+          .where('accountId', '==', String(accountId))
+          .orderBy('time', 'desc')
+          .limit(50)
+          .get();
+      }
+      
+      snap.forEach(doc => {
+        tickets.push({ id: doc.id, ...doc.data() });
+      });
+      
+      console.log(`📋 Найдено ${tickets.length} тикетов для ${accountId}`);
+    } else {
+      // Все тикеты (для админа)
+      const snap = await db.collection('support').orderBy('time', 'desc').limit(100).get();
+      snap.forEach(doc => {
+        tickets.push({ id: doc.id, ...doc.data() });
+      });
+      console.log(`📋 Всего тикетов: ${tickets.length}`);
     }
     
-    const snap = await query.get();
-    const tickets = [];
-    snap.forEach(doc => {
-      const data = doc.data();
-      tickets.push({
-        id: doc.id,
-        user: data.user || 'Аноним',
-        accountId: data.accountId || null,
-        category: data.category || 'Обращение',
-        message: data.message || '',
-        time: data.time || Date.now()
-      });
-    });
-    
-    console.log(`📋 Загружено ${tickets.length} тикетов`);
     res.json(tickets);
   } catch(e) {
-    console.error('❌ Ошибка загрузки тикетов:', e);
+    console.error('❌ Ошибка загрузки тикетов:', e.message);
     res.json([]);
   }
 });
@@ -118,20 +139,21 @@ app.post('/api/support/ticket', async (req, res) => {
   try {
     const ticket = {
       user: req.body.user || 'Аноним',
-      accountId: req.body.accountId || null,
+      accountId: String(req.body.accountId || ''), // Сохраняем как строку для единообразия
       category: req.body.category || 'Обращение',
       message: req.body.message || '',
+      status: 'pending',
       time: req.body.time || Date.now()
     };
     
-    console.log('📝 Новый тикет:', ticket);
+    console.log('📝 Новый тикет от', ticket.user, '(ID:', ticket.accountId, ')');
     
     const docRef = await db.collection('support').add(ticket);
-    console.log('✅ Тикет сохранён:', docRef.id);
+    console.log('✅ Тикет сохранён с ID:', docRef.id);
     
     res.json({ success: true, id: docRef.id });
   } catch(e) {
-    console.error('❌ Ошибка сохранения тикета:', e);
+    console.error('❌ Ошибка сохранения тикета:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -146,18 +168,17 @@ app.put('/api/support/ticket/:ticketId', async (req, res) => {
     if (req.body.status) updateData.status = req.body.status;
     if (req.body.adminReply) updateData.adminReply = req.body.adminReply;
     if (req.body.adminName) updateData.adminName = req.body.adminName;
-    if (req.body.adminId) updateData.adminId = req.body.adminId;
+    if (req.body.adminId) updateData.adminId = String(req.body.adminId || '');
     if (req.body.updatedAt) updateData.updatedAt = req.body.updatedAt;
     
     await db.collection('support').doc(ticketId).update(updateData);
-    console.log(`✅ Тикет ${ticketId} обновлён: статус=${req.body.status}`);
+    console.log(`✅ Тикет ${ticketId} обновлён`);
     res.json({ success: true });
   } catch(e) {
-    console.error('❌ Ошибка обновления тикета:', e);
+    console.error('❌ Ошибка обновления тикета:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
-
 // ==================== ИСТОРИЯ ЧАТА ====================
 app.get('/api/chat/:clanId/history', async (req, res) => {
   if (!db) return res.json({ general: [], officer: [] });
