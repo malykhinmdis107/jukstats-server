@@ -41,6 +41,42 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', firebase: !!db });
 });
 
+// ==================== ПРОВЕРКА УРОВНЯ ДОСТУПА ====================
+app.get('/api/admin/check-level', async (req, res) => {
+  if (!db) return res.json({ level: 0 });
+  try {
+    const accountId = parseInt(req.query.accountId);
+    if (!accountId) return res.json({ level: 0 });
+    
+    // Ищем в коллекции admin_levels документ с ID = accountId
+    const doc = await db.collection('admin_levels').doc(String(accountId)).get();
+    const level = doc.exists ? (doc.data().level || 0) : 0;
+    res.json({ level });
+  } catch(e) {
+    res.json({ level: 0 });
+  }
+});
+
+// ==================== СПИСОК ВСЕХ ПОРОГОВ (для админа) ====================
+app.get('/api/admin/thresholds-list', async (req, res) => {
+  if (!db) return res.json({});
+  try {
+    const snap = await db.collection('tankThresholds').get();
+    const thresholds = {};
+    snap.forEach(doc => {
+      const data = doc.data();
+      if (data.admin) {
+        thresholds[doc.id] = {
+          mark1: data.admin.mark1 || null,
+          mark2: data.admin.mark2 || null,
+          mark3: data.admin.mark3 || null
+        };
+      }
+    });
+    res.json(thresholds);
+  } catch(e) { res.json({}); }
+});
+
 // ==================== ИСТОРИЯ ЧАТА ====================
 app.get('/api/chat/:clanId/history', async (req, res) => {
   if (!db) return res.json({ general: [], officer: [] });
