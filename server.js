@@ -369,6 +369,57 @@ app.post('/api/player/:accountId/tank-stats/:tankId', async (req, res) => {
   }
 });
 
+// ==================== ПОРОГИ ОТМЕТОК (АДМИНКА) ====================
+
+// Получить пороги для конкретного танка
+app.get('/api/thresholds/:tankId', async (req, res) => {
+  if (!db) return res.json({ admin: {}, user: {} }); // Если БД не подключена
+  
+  try {
+    const { tankId } = req.params;
+    const doc = await db.collection('tankThresholds').doc(tankId).get();
+    
+    if (doc.exists) {
+      res.json(doc.data());
+    } else {
+      res.json({ admin: { mark1: null, mark2: null, mark3: null }, user: {} });
+    }
+  } catch(e) {
+    console.error('❌ Ошибка загрузки порогов:', e.message);
+    res.json({ admin: {}, user: {} });
+  }
+});
+
+// Сохранить админские пороги (только для админов!)
+app.post('/api/thresholds/:tankId', async (req, res) => {
+  if (!db) return res.json({ success: false });
+  
+  // ТУТ НУЖНА ПРОВЕРКА НА АДМИНА! 
+  // Например, проверять токен или ID аккаунта из заголовков
+  // const isAdmin = checkAdmin(req); 
+  // if (!isAdmin) return res.status(403).json({ error: 'Access denied' });
+
+  try {
+    const { tankId } = req.params;
+    const { mark1, mark2, mark3 } = req.body;
+    
+    await db.collection('tankThresholds').doc(tankId).set({
+      admin: {
+        mark1: mark1 !== null ? Number(mark1) : null,
+        mark2: mark2 !== null ? Number(mark2) : null,
+        mark3: mark3 !== null ? Number(mark3) : null
+      },
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    
+    console.log(`🛡️ Админские пороги для танка ${tankId} обновлены`);
+    res.json({ success: true });
+  } catch(e) {
+    console.error('❌ Ошибка сохранения порогов:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ==================== ЕЖЕДНЕВНАЯ СТАТИСТИКА ИГРОКА ====================
 
 // Сохранение ежедневного снимка статистики
