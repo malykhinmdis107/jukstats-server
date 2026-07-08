@@ -136,6 +136,28 @@ app.post('/api/support/ticket', async (req, res) => {
   }
 });
 
+// Обновление тикета (статус + ответ)
+app.put('/api/support/ticket/:ticketId', async (req, res) => {
+  if (!db) return res.json({ success: false, error: 'no database' });
+  try {
+    const { ticketId } = req.params;
+    const updateData = {};
+    
+    if (req.body.status) updateData.status = req.body.status;
+    if (req.body.adminReply) updateData.adminReply = req.body.adminReply;
+    if (req.body.adminName) updateData.adminName = req.body.adminName;
+    if (req.body.adminId) updateData.adminId = req.body.adminId;
+    if (req.body.updatedAt) updateData.updatedAt = req.body.updatedAt;
+    
+    await db.collection('support').doc(ticketId).update(updateData);
+    console.log(`✅ Тикет ${ticketId} обновлён: статус=${req.body.status}`);
+    res.json({ success: true });
+  } catch(e) {
+    console.error('❌ Ошибка обновления тикета:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ==================== ИСТОРИЯ ЧАТА ====================
 app.get('/api/chat/:clanId/history', async (req, res) => {
   if (!db) return res.json({ general: [], officer: [] });
