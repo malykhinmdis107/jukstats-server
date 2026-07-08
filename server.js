@@ -77,6 +77,65 @@ app.get('/api/admin/thresholds-list', async (req, res) => {
   } catch(e) { res.json({}); }
 });
 
+// ==================== ТИКЕТЫ ПОДДЕРЖКИ ====================
+app.get('/api/support/tickets', async (req, res) => {
+  if (!db) return res.json([]);
+  try {
+    let query = db.collection('support').orderBy('time', 'desc').limit(100);
+    
+    // Если указан accountId — фильтруем по пользователю
+    if (req.query.accountId) {
+      query = db.collection('support')
+        .where('accountId', '==', parseInt(req.query.accountId))
+        .orderBy('time', 'desc')
+        .limit(50);
+    }
+    
+    const snap = await query.get();
+    const tickets = [];
+    snap.forEach(doc => {
+      const data = doc.data();
+      tickets.push({
+        id: doc.id,
+        user: data.user || 'Аноним',
+        accountId: data.accountId || null,
+        category: data.category || 'Обращение',
+        message: data.message || '',
+        time: data.time || Date.now()
+      });
+    });
+    
+    console.log(`📋 Загружено ${tickets.length} тикетов`);
+    res.json(tickets);
+  } catch(e) {
+    console.error('❌ Ошибка загрузки тикетов:', e);
+    res.json([]);
+  }
+});
+
+app.post('/api/support/ticket', async (req, res) => {
+  if (!db) return res.json({ success: false, error: 'no database' });
+  try {
+    const ticket = {
+      user: req.body.user || 'Аноним',
+      accountId: req.body.accountId || null,
+      category: req.body.category || 'Обращение',
+      message: req.body.message || '',
+      time: req.body.time || Date.now()
+    };
+    
+    console.log('📝 Новый тикет:', ticket);
+    
+    const docRef = await db.collection('support').add(ticket);
+    console.log('✅ Тикет сохранён:', docRef.id);
+    
+    res.json({ success: true, id: docRef.id });
+  } catch(e) {
+    console.error('❌ Ошибка сохранения тикета:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ==================== ИСТОРИЯ ЧАТА ====================
 app.get('/api/chat/:clanId/history', async (req, res) => {
   if (!db) return res.json({ general: [], officer: [] });
