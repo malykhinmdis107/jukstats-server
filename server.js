@@ -226,6 +226,98 @@ app.post('/api/chat/:clanId/moderation', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== ЕЖЕДНЕВНАЯ СТАТИСТИКА ИГРОКА ====================
+
+// Сохранение ежедневного снимка статистики
+app.post('/api/player/:accountId/daily-stats', async (req, res) => {
+  if (!db) return res.json({ success: false, error: 'no database' });
+  
+  try {
+    const { accountId } = req.params;
+    const { stats } = req.body;
+    
+    if (!stats) return res.status(400).json({ error: 'Нет данных' });
+    
+    // Ключ: дата в формате YYYY-MM-DD (МСК)
+    const now = new Date();
+    const mskTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
+    const dateKey = mskTime.toISOString().split('T')[0]; // YYYY-MM-DD
+    
+    // Сохраняем в коллекцию dailyStats/{accountId}/snapshots/{dateKey}
+    await db
+      .collection('dailyStats')
+      .doc(accountId)
+      .collection('snapshots')
+      .doc(dateKey)
+      .set({
+        ...stats,
+        date: dateKey,
+        savedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    
+    console.log(`💾 Ежедневная статистика ${accountId} за ${dateKey} сохранена`);
+    res.json({ success: true, date: dateKey });
+  } catch(e) {
+    console.error('❌ Ошибка сохранения ежедневной статистики:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Получение ежедневной статистики
+app.get('/api/player/:accountId/daily-stats', async (req, res) => {
+  if (!db) return res.json({ snapshots: [] });
+  
+  try {
+    const { accountId } = req.params;
+    const { days = 30 } = req.query;
+    
+    // Вычисляем дату N дней назад (МСК)
+    const now = new Date();
+    const mskTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
+    mskTime.setDate(mskTime.getDate() - parseInt(days));
+    const fromDate = mskTime.toISOString().split('T')[0];
+    
+    const snapshot = await db
+      .collection('dailyStats')
+      .doc(accountId)
+      .collection('snapshots')
+      .where('date', '>=', fromDate)
+      .orderBy('date', 'asc')
+      .get();
+    
+    const snapshots = [];
+    snapshot.forEach(doc => snapshots.push(doc.data()));
+    
+    res.json({ snapshots });
+  } catch(e) {
+    console.error('❌ Ошибка загрузки ежедневной статистики:', e.message);
+    res.json({ snapshots: [] });
+  }
+});
+
+// Проверка, сохранена ли уже статистика за сегодня
+app.get('/api/player/:accountId/daily-stats/today', async (req, res) => {
+  if (!db) return res.json({ exists: false });
+  
+  try {
+    const { accountId } = req.params;
+    const now = new Date();
+    const mskTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
+    const today = mskTime.toISOString().split('T')[0];
+    
+    const doc = await db
+      .collection('dailyStats')
+      .doc(accountId)
+      .collection('snapshots')
+      .doc(today)
+      .get();
+    
+    res.json({ exists: doc.exists, date: today });
+  } catch(e) {
+    res.json({ exists: false });
+  }
+});
+
 // ==================== ЗАГРУЗКА ФОТО ====================
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
