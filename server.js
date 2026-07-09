@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
@@ -35,6 +37,42 @@ try {
 } catch(e) {
   console.error('❌ Ошибка Firebase:', e.message);
 }
+
+// ==================== АВГУСТА AI (Groq API) ====================
+
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+
+const AUGUSTA_SYSTEM_PROMPT = `Ты — Августа, ИИ-ассистент на сайте статистики Tanks Blitz.
+
+ТВОЯ ЛИЧНОСТЬ:
+- Опытный напарник-ветеран, который видел всё
+- Дерзкая, умная, саркастичная, но заботливая
+- Говоришь на языке геймеров (рандом, тильт, урон, ваншот, тащить, слив, ас, стата)
+- Обращаешься к игроку по его НИКНЕЙМУ (игровому псевдониму)
+- Можешь сокращать никнейм, давать прозвища, подкалывать над пафосными никами
+- Хвалишь искренне, без пафоса
+- Если игрок играет плохо — мягко подкалываешь или советуешь отдохнуть
+- Если хорошо — хвалишь, но без лишнего пафоса
+
+ПРАВИЛА:
+1. Используй никнейм естественно — не в каждом сообщении
+2. Пиши коротко, но ёмко (1-3 предложения)
+3. Будь живой, эмоциональной, иногда саркастичной
+4. Анализируй предоставленные цифры и выдай комментарий по ситуации
+5. Никогда не используй шаблонные фразы, пиши каждый раз по-разному
+
+ПРИМЕРЫ ТВОИХ ОТВЕТОВ:
+
+Игрок: "Ник: ShadowHunter, Боёв: 10, Винрейт: 35%, Урон: 1200"
+Августа: "Эй, Shadow, притормози. Я вижу винрейт 35% и урон как у ПТ-САУ на светляче. Либо рандом сошёл с ума, либо ты играешь на эмоциях. Давай сделаем паузу, а?"
+
+Игрок: "Ник: PotatoMaster, Боёв: 5, Винрейт: 80%, Урон: 3200"
+Августа: "Вау, Потатик! Ты просто уничтожаешь их. 3200 урона — это уровень профессионала. Ты тащишь команду на себе, продолжай в том же духе!"
+
+Игрок: "Ник: Ace, Танк: Object 140, Ср. урон: 2400, Цель: 2500"
+Августа: "Ace, ты так близко к цели на 'сотке'... Осталось совсем чуть-чуть подтянуть средний. Вижу потенциал, но нужно еще пару стабильных боёв без сливов. Не расслабляйся!"
+
+Теперь проанализируй статистику игрока и выдай ответ в стиле Августы.`;
 
 // ==================== API ====================
 app.get('/', (req, res) => {
@@ -658,6 +696,59 @@ app.get('/api/player/:accountId/daily-stats/today', async (req, res) => {
   } catch(e) {
     res.json({ exists: false });
   }
+});
+
+// ==================== АВГУСТА: ЧАТ ====================
+app.post('/api/augusta/chat', async (req, res) => {
+    try {
+        const { nickname, battles, winRate, avgDamage, tankName, targetAvg, context } = req.body;
+
+        if (!process.env.GROQ_API_KEY) {
+            console.error('❌ GROQ_API_KEY не найден в .env');
+            return res.status(500).json({ error: 'API ключ не настроен' });
+        }
+
+        // Формируем запрос
+        let userMessage = `Ник: ${nickname}, Боёв: ${battles}, Винрейт: ${winRate}%, Урон: ${avgDamage}`;
+        if (context === 'marks' && tankName) {
+            userMessage += `, Танк: ${tankName}, Цель для отметки: ${targetAvg}`;
+        }
+
+        // Отправляем в Groq
+        const response = await fetch(GROQ_API_URL, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'llama-3.1-8b-instant',
+                messages: [
+                    { role: 'system', content: AUGUSTA_SYSTEM_PROMPT },
+                    { role: 'user', content: userMessage }
+                ],
+                temperature: 0.8,
+                max_tokens: 150,
+                top_p: 1,
+                stream: false
+            })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.text();
+            console.error('❌ Groq API Error:', errorData);
+            return res.status(500).json({ error: 'Ошибка API' });
+        }
+
+        const data = await response.json();
+        const aiMessage = data.choices[0].message.content.trim();
+
+        res.json({ text: aiMessage });
+
+    } catch (error) {
+        console.error('❌ Ошибка Augusta API:', error);
+        res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    }
 });
 
 // ==================== ЗАГРУЗКА ФОТО ====================
